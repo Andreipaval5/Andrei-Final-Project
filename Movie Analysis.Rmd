@@ -1,0 +1,548 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F,warning = F,fig.width = 12, fig.height = 8)
+```
+
+
+```{r include=FALSE}
+setwd("~/Working Direct")
+```
+
+```{r}
+# Libraries and Datasets
+library(readr) # To read csv files 
+library(jsonlite) # convert json columns to normal columns
+library(tidyverse) # data manipulations
+library(pander) # tables
+library(stargazer) # tidying up tables
+library(psych) # for descriptive statistics
+library(lubridate) # date variable
+library(ggplot2) # for visualization
+library(ggpubr) # outliers
+library(multcomp) # multiple comparison
+library(car) # leven test
+library(gtsummary) # regression analysis
+library(stringi) # convert to character
+credits <- read_csv("tmdb_5000_credits.csv", show_col_types = FALSE)
+movies <- read_csv("tmdb_5000_movies.csv", show_col_types = FALSE)
+options(warn = -1) 
+options(scipen = 999)  # Prevent scientific notation
+options(digits = 3)  # decimal places
+options(pillar.sigfig = 3)  # For printing tables in RStudio
+panderOptions('digits', 3) # For pander tables
+```
+
+```{r}
+# Data Pre-processing
+parse_json_column <- function(json_col) {
+  ifelse(
+    json_col == "[]" | json_col == "{}" | is.na(json_col),
+    NA, # Handle empty or NA values
+    map(json_col, ~ fromJSON(.x, simplifyDataFrame = TRUE))
+  )
+}
+```
+
+```{r}
+# Credits Dataset
+credits <- credits%>%
+  mutate(
+    cast = parse_json_column(cast),
+    crew = parse_json_column(crew)
+  )
+```
+
+```{r}
+cast<- credits%>%
+  dplyr::select(movie_id, title,cast) %>%
+  unnest(cast)%>%
+  distinct(movie_id, .keep_all = TRUE)
+crew<- credits%>%
+  dplyr::select(movie_id, title,crew)%>%
+  unnest(crew)%>%
+  distinct(movie_id, .keep_all = TRUE)
+```
+
+```{r}
+## Merging crew and cast
+credits=credits%>%
+  dplyr::select(movie_id,title)
+cast=cast%>%
+  dplyr::select(-c(name,order,credit_id,title))
+crew=crew%>%
+  dplyr::select(-c(gender,id,name,credit_id,title))
+## merge into credits data
+credits_data=reduce(list(credits,cast,crew), ~ inner_join(.x, .y, by = "movie_id"))
+# delete unwanted dataframes
+rm(credits)
+rm(cast)
+rm(crew)
+```
+
+```{r}
+# Movies Datasets
+movies <- movies%>%
+  rename(movie_id = id) %>%
+  mutate(
+    genres= parse_json_column(genres),
+    keywords = parse_json_column(keywords),
+    production_companies = parse_json_column(production_companies),
+    production_countries = parse_json_column(production_countries),
+    spoken_languages = parse_json_column(spoken_languages)
+  )
+```
+
+```{r}
+# genres
+genres <- movies %>%
+  dplyr::select(movie_id,homepage,original_language,original_title,overview,popularity,release_date,runtime,status,tagline,title,vote_average,vote_count,genres) %>%
+  unnest(genres)%>%
+  rename(genre = name) %>%
+  distinct(movie_id, .keep_all = TRUE)%>%
+  dplyr::select(-c(id))
+# keywords
+keywords <- movies %>%
+  dplyr::select(movie_id,keywords) %>%
+  unnest(keywords)%>%
+  rename(keywords=name) %>%
+  distinct(movie_id, .keep_all = TRUE)%>%
+  dplyr::select(-id)
+# production_companies
+production_companies <- movies %>%
+  dplyr::select(movie_id,production_companies) %>%
+  unnest(production_companies)%>%
+  rename(production_companies=name) %>%
+  distinct(movie_id, .keep_all = TRUE)%>%
+  dplyr::select(-id)
+# production_countries
+production_countries <- movies %>%
+  dplyr::select(movie_id,production_countries) %>%
+  unnest(production_countries)%>%
+  rename(production_countries=name) %>%
+  distinct(movie_id, .keep_all = TRUE)
+# spoken_languages
+spoken_languages <- movies %>%
+  dplyr::select(movie_id,spoken_languages) %>%
+  unnest(spoken_languages)%>%
+  rename(spoken_languages=name) %>%
+  distinct(movie_id, .keep_all = TRUE)
+## merge into credits data
+movie_data=reduce(list(genres,keywords,production_companies,production_countries,spoken_languages), ~ inner_join(.x, .y, by = "movie_id"))
+# delete unwanted dataframes
+rm(movies)
+rm(genres)
+rm(keywords)
+rm(production_companies)
+rm(production_countries)
+rm(spoken_languages)
+## Final dataset
+df=reduce(list(credits_data,movie_data), ~ inner_join(.x, .y, by = "movie_id","title"))
+df=df%>%
+  rename(title=title.x)%>%
+  dplyr::select(-title.y)
+# remove the two remaining datasets not in use
+rm(credits_data)
+rm(movie_data)
+# convert all characters to factors in the dataset
+df <- df %>%
+  mutate(across(where(is.character), ~ as.factor(.)))
+df=as.data.frame(df)
+```
+
+```{r}
+panderOptions("table.caption.prefix", "")
+# Apply sapply to get the number of unique values for each column
+unique_counts <- sapply(df, function(x) length(unique(x)))
+# Convert the result into a dataframe
+data.frame(
+  UniqueCount = unique_counts
+)%>%pander(caption = "Table 1: Unique Values in the TMDB 500 Movie Dataset")
+```
+
+
+```{r}
+# Calculate descriptive statistics for selected columns
+desc <- describe(df[, c(13, 15, 18, 19)])
+desc_df=as.data.frame(desc)
+# View the result to confirm it has the correct output
+  t(desc_df)%>%
+pander(caption = "Table 2: Descriptive Statistics of Numerical Features")
+```
+
+
+```{r}
+df%>%
+  na.omit(df$genre)%>%
+  group_by(genre) %>%
+  summarise(
+    N = n(), # Count of each genre
+    Percent = (n() / nrow(df)) * 100 # Percent for each genre
+  ) %>%
+  arrange(desc(N)) %>%
+  mutate(
+    Cumulative = cumsum(Percent) # Cumulative percent
+  )%>%
+    pander(caption="Table 3: Frequency Distribution of Genres")
+```
+
+
+```{r}
+df %>%na.omit(df$department)%>%
+  group_by(department) %>%
+  summarise(
+    N = n(), # Count of each genre
+    Percent = (n() / nrow(df)) * 100 # Percent for each genre
+  ) %>%
+  arrange(desc(N)) %>%
+  mutate(
+    Cumulative = cumsum(Percent) # Cumulative percent
+  )%>%
+    pander(caption="Table 4: Frequency Distribution of Movies by Departments")
+```
+
+
+```{r}
+df %>%
+  group_by(status) %>%
+  summarise(
+    N = n(), # Count of each genre
+    Percent = (n() / nrow(df)) * 100 # Percent for each genre
+  ) %>%
+  arrange(desc(N)) %>%
+  mutate(
+    Cumulative = cumsum(Percent) # Cumulative percent
+  )%>%
+    pander(caption="Table 5: Frequency Distribution of Movies by Status")
+```
+
+
+```{r}
+# selecting 5 most frequent genres in the dataset
+df$release_date=as.Date(df$release_date, format = "%Y-%m-%d")
+dt=df %>%
+  filter(genre %in% c("Drama", "Comedy","Action","Adventure","Horror"))%>%
+  mutate(genre=factor(genre))
+```
+
+
+```{r}
+ggplot(df, aes(x = release_date, y = popularity)) +
+  geom_line(color = "blue",label="line") +
+  geom_point(color = "red", size = 0.5,label="scatter") + labs(caption = "Figure 1: Movie Popularity by Release Date", x = "Release Date", y = "Popularity") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45),  
+    plot.caption  = element_text(size = 16, hjust = 0.5,face='bold'),
+    plot.y  = element_text(size = 16, hjust = 0.5,face='bold'),
+    plot.x  = element_text(size = 16, hjust = 0.5,face='bold'),
+    legend.position = "right")
+```
+
+
+```{r}
+ggplot(df, aes(x = release_date, y =runtime)) +
+  geom_line(color = "blue",label="line") +
+  geom_point(color = "red", size = 0.5,label="scatter") + labs(caption = "Figure 2: Movie Run-time by Release Date", x = "Release Date", y = "Run-time") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45),  
+    plot.caption  = element_text(size = 16, hjust = 0.5,face='bold'),
+    plot.y  = element_text(size = 16, hjust = 0.5,face='bold'),
+    plot.x  = element_text(size = 16, hjust = 0.5,face='bold'),
+    legend.position = "right")
+```
+
+
+```{r}
+ggplot(df, aes(x = release_date, y = vote_average)) +
+  geom_line(color = "blue",label="line") +
+  geom_point(color = "red", size = 0.5,label="scatter") + labs(caption = "Figure 3: Movie Rating by Release Date", x = "Release Date", y = "Vote Rate") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45),  
+    plot.caption  = element_text(size = 16, hjust = 0.5,face='bold'),
+    plot.y  = element_text(size = 16, hjust = 0.5,face='bold'),
+    plot.x  = element_text(size = 16, hjust = 0.5,face='bold'),
+    legend.position = "right")
+```
+
+
+```{r}
+# mean and sd
+mean_popularity <- mean(df$popularity, na.rm = TRUE)
+sd_popularity <- sd(df$popularity, na.rm = TRUE)
+# histogram
+ggplot(df, aes(x = popularity)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black", alpha = 0.6) +  # Histogram
+  stat_function(fun = dnorm, args = list(mean = mean_popularity, sd = sd_popularity), 
+                color = "red", size = 1) +  # Normal curve
+  geom_vline(aes(xintercept = mean_popularity), color = "blue", linetype = "dashed", size = 1) +  # Mean line
+  geom_vline(aes(xintercept = mean_popularity + sd_popularity), color = "green", linetype = "dashed", size = 1) +  # SD line
+  geom_vline(aes(xintercept = mean_popularity - sd_popularity), color = "green", linetype = "dashed", size = 1) +  # SD line
+  labs(caption = "Figure 4: Popularity Distribution with Normal Curve", 
+       x = "Popularity", 
+       y = "Density") +
+  theme_minimal() +
+  theme(plot.caption = element_text(size = 16, hjust = 0.5,face='bold'))  
+```
+
+
+```{r}
+# mean and sd
+mean_rate <- mean(df$vote_average, na.rm = TRUE)
+sd_rate <- sd(df$vote_average, na.rm = TRUE)
+# histogram
+ggplot(df, aes(x = vote_average)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black", alpha = 0.6) +  # Histogram
+  stat_function(fun = dnorm, args = list(mean = mean_rate, sd = sd_rate), 
+                color = "red", size = 1) +  # Normal curve
+  geom_vline(aes(xintercept = mean_popularity), color = "blue", linetype = "dashed", size = 1) +  # Mean line
+  geom_vline(aes(xintercept = mean_rate + sd_rate), color = "green", linetype = "dashed", size = 1) +  # SD line
+  geom_vline(aes(xintercept = mean_rate - sd_rate), color = "green", linetype = "dashed", size = 1) +  # SD line
+  labs(caption = "Figure 5: Rating Distribution with Normal Curve", 
+       x = "Rating", 
+       y = "Density") +
+  theme_minimal() +
+  theme(plot.caption = element_text(size = 16, hjust = 0.5,face='bold'))
+```
+
+
+```{r}
+df%>%na.omit(df$genre)%>%
+  ggplot(aes(x = genre)) +
+  geom_bar(fill = "red", color = "black", alpha = 0.8) + 
+  geom_text(stat = "count", aes(label = ..count..), vjust = 0.5, size = 4) +labs(caption = "Figure 6: Bar chart of Movie Genres",
+       x = "Genre",
+       y = "Frequency") +
+  theme_minimal() +
+  theme(plot.caption = element_text(size = 16, hjust = 0.5))+coord_flip() 
+```
+
+
+```{r}
+group_by(dt, genre) %>%
+  summarise(
+    N = n(),
+    Mean = mean(popularity, na.rm = TRUE),
+    SD = sd(popularity, na.rm = TRUE)
+  )%>%
+    pander(caption="Table 6: Descriptive Statistics of Popularity by Genre")
+```
+
+
+```{r}
+# outliers
+ggboxplot(dt, x = "genre", y = "popularity", 
+          color = "genre")+labs(caption = "Figure 7: Boxplot of Popularity by Genre",
+       x = "Genre",
+       y = "Popularity") +
+  theme_minimal() +
+  theme(plot.caption = element_text(size = 16, hjust = 0.5))
+```
+
+
+```{r}
+lev1=leveneTest(popularity ~ genre, data = dt)
+lev1%>%
+  mutate(`Pr(>F)`=sprintf("%.4f", `Pr(>F)`))%>%
+    pander(caption="Table 7: Levene's of Popularity by Genre")
+```
+
+
+```{r}
+# Compute the analysis of variance
+rest1=aov(popularity ~ genre, data = dt)
+res1 <- as.data.frame(summary(aov(popularity ~ genre, data = dt))[[1]])
+res1%>%
+  mutate(`Pr(>F)`=sprintf("%.4f", `Pr(>F)`))%>%
+    pander(caption="Table 8: One-way Results of Popularity by Genre")
+```
+
+
+```{r}
+# Compute the analysis of variance
+comp1 <- TukeyHSD(rest1)
+comp1=as.data.frame(comp1$genre)%>%
+  mutate(`p adj`=sprintf("%.4f", `p adj`))%>%
+    pander(caption="Table 9: Multiple Comparison of Popularity by Genre")
+```
+
+
+```{r}
+group_by(dt, genre) %>%
+  summarise(
+    N = n(),
+    Mean = mean(runtime, na.rm = TRUE),
+    SD = sd(runtime, na.rm = TRUE)
+  )%>%
+    pander(caption="Table 10: Descriptive Statistics of Run-time by Genre")
+```
+
+
+```{r}
+# outliers
+ggboxplot(dt, x = "genre", y = "runtime", 
+          color = "genre")+labs(caption = "Figure 8: Boxplot of Run-time by Genre",
+       x = "Genre",
+       y = "Run-time") +
+  theme_minimal() +
+  theme(plot.caption = element_text(size = 16, hjust = 0.5))
+```
+
+
+```{r}
+lev2=leveneTest(runtime ~ genre, data = dt)
+lev2%>%
+  mutate(`Pr(>F)`=sprintf("%.4f", `Pr(>F)`))%>%
+    pander(caption="Table 11: Levene's of Run-time by Genre")
+```
+
+
+```{r}
+# Compute the analysis of variance
+rest2=aov(runtime ~ genre, data = dt)
+res2 <- as.data.frame(summary(aov(runtime ~ genre, data = dt))[[1]])
+res2%>%
+  mutate(`Pr(>F)`=sprintf("%.4f", `Pr(>F)`))%>%
+    pander(caption="Table 12: One-way Results of Run-time by Genre")
+```
+
+
+```{r}
+# Compute the analysis of variance
+comp2 <- TukeyHSD(rest2)
+comp2=as.data.frame(comp2$genre)%>%
+  mutate(`p adj`=sprintf("%.4f", `p adj`))%>%
+    pander(caption="Table 13: Multiple Comparison of Popularity by Genre")
+```
+
+
+```{r}
+group_by(dt, genre) %>%
+  summarise(
+    N = n(),
+    Mean = mean(vote_average, na.rm = TRUE),
+    SD = sd(vote_average, na.rm = TRUE)
+  )%>%
+    pander(caption="Table 14: Descriptive Statistics of Rating by Genre")
+```
+
+
+```{r}
+# outliers
+ggboxplot(dt, x = "genre", y = "vote_average", 
+          color = "genre")+labs(caption = "Figure 9: Boxplot of Rating by Genre",
+       x = "Genre",
+       y = "Rating") +
+  theme_minimal() +
+  theme(plot.caption = element_text(size = 16, hjust = 0.5))
+```
+
+
+```{r}
+lev3=leveneTest(vote_average ~ genre, data = dt)
+lev3%>%
+  mutate(`Pr(>F)`=sprintf("%.4f", `Pr(>F)`))%>%
+
+    pander(caption="Table 15: Levene's of Rating by Genre")
+```
+
+
+```{r}
+# Compute the analysis of variance
+rest3=aov(vote_average ~ genre, data = dt)
+res3 <- as.data.frame(summary(aov(vote_average ~ genre, data = dt))[[1]])
+res3%>%
+  mutate(`Pr(>F)`=sprintf("%.4f", `Pr(>F)`))%>%
+    pander(caption="Table 16: One-way Results of Rating by Genre")
+```
+
+
+```{r}
+# Compute the analysis of variance
+comp3 <- TukeyHSD(rest3)
+comp3=as.data.frame(comp3$genre)%>%
+  mutate(`p adj`=sprintf("%.4f", `p adj`))%>%
+    pander(caption="Table 17: Multiple Comparison of Rating by Genre")
+```
+
+
+```{r}
+group_by(dt, genre) %>%
+  summarise(
+    N = n(),
+    Mean = mean(vote_count, na.rm = TRUE),
+    SD = sd(vote_count, na.rm = TRUE)
+  )%>%
+    pander(caption="Table 18: Descriptive Statistics of Total Reviews by Genre")
+```
+
+
+```{r}
+# outliers
+ggboxplot(dt, x = "genre", y = "vote_count", 
+          color = "genre")+labs(caption = "Figure 10: Boxplot of Total Reviews by Genre",
+       x = "Genre",
+       y = "Total Reviews") +
+  theme_minimal() +
+  theme(plot.caption = element_text(size = 16, hjust = 0.5))
+```
+
+
+```{r}
+lev4=leveneTest(vote_count ~ genre, data = dt)
+lev4%>%
+  mutate(`Pr(>F)`=sprintf("%.4f", `Pr(>F)`))%>%
+    pander(caption="Table 19: Levene's of Total Reviews by Genre")
+```
+
+
+```{r}
+# Compute the analysis of variance
+res4 <- as.data.frame(summary(aov(vote_count ~ genre, data = dt))[[1]])
+res4%>%
+  mutate(`Pr(>F)`=sprintf("%.4f", `Pr(>F)`))%>%
+    pander(caption="Table 20: One-way Results of Total Reviews by Genre")
+```
+
+
+```{r}
+# Compute the analysis of variance
+rest4=aov(vote_count ~ genre, data = dt)
+comp4 <- TukeyHSD(rest4)
+comp4=as.data.frame(comp4$genre)%>%
+  mutate(`p adj`=sprintf("%.4f", `p adj`))%>%
+    pander(caption="Table 21: Multiple Comparison of Total Reviews by Genre")
+```
+
+
+```{r}
+# Create a new binary variable 'adventure'
+df <- df %>%
+  mutate(Action = ifelse(grepl("\\bAction\\b", genre, ignore.case = TRUE), 1, 0),
+Adventure = ifelse(grepl("\\bAdventure\\b", genre, ignore.case = TRUE), 1, 0),
+Comedy = ifelse(grepl("\\bComedy\\b", genre, ignore.case = TRUE), 1, 0),
+Drama = ifelse(grepl("\\bDrama\\b", genre, ignore.case = TRUE), 1, 0),
+Horror = ifelse(grepl("\\bHorror\\b", genre, ignore.case = TRUE), 1, 0))
+```
+
+```{r}
+m1=glm(Action~popularity+runtime+vote_average+vote_count, data = df, family = binomial)
+m2=glm(Adventure~popularity+runtime+vote_average+vote_count, data = df, family = binomial)
+m3=glm(Comedy~popularity+runtime+vote_average+vote_count, data = df, family = binomial)
+m4=glm(Drama~popularity+runtime+vote_average+vote_count, data = df, family = binomial)
+m5=glm(Horror~popularity+runtime+vote_average+vote_count, data = df, family = binomial)
+```
+
+
+```{r}
+models_list <- list(m1, m2, m3, m4, m5)
+model_labels <- c("Action", "Adventure", "Comedy", "Drama", "Horror")
+tables_list <- lapply(models_list, function(model) {
+  tbl_regression(model, exponentiate = TRUE, confint = TRUE)})
+combined_table <- tbl_stack(tables_list, group_header = model_labels)%>%
+  modify_caption("**Table 22: Logistic Regression Results for Different Genres**")
+combined_table
+```
+
+
+
+```{r, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+
+```

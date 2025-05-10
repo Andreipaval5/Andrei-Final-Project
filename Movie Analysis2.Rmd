@@ -1,0 +1,267 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+setwd("~/Working Direct")
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+# Libraries and Datasets
+library(readr) # To read csv files 
+library(jsonlite) # convert json columns to normal columns
+library(tidyverse) # data manipulations
+library(pander) # tables
+library(stargazer) # tidying up tables
+library(psych) # for descriptive statistics
+library(lubridate) # date variable
+library(ggplot2) # for visualization
+library(ggpubr) # outliers
+library(multcomp) # multiple comparison
+library(car) # leven test
+library(gtsummary) # regression analysis
+library(stringi) # convert to character
+data <- read.csv("tmdb_5000_credits.csv")
+data2 <- read.csv("tmdb_5000_movies.csv")
+data3 <- read.csv("IMDb_5000_movies.csv")
+
+#Merging Datasests
+names(data)[1] <- "id"
+master <- data %>% inner_join(data2, by = "id")
+names(master)[2] <- "Movie_Title"
+master <- master %>% inner_join(data3, by = "Movie_Title") 
+
+master <- master %>%
+select(-id, -cast, -crew, -homepage, -keywords, -original_language, 
+         -original_title, -overview, -production_companies, -production_countries,
+         -release_date, -spoken_languages, -title.y, -runtime, -genres, -status) #removes unwanted columns 
+
+master$Total_Gross <- as.numeric(gsub("[$M]", "", master$Total_Gross))
+master <- na.omit(master) #removes rows with missing values 
+# Is a movie successful (e.g., popularity > threshold)?
+master$success <- ifelse(master$popularity > quantile(master$popularity, 0.75,
+                                                      na.rm = TRUE), 1, 0)
+summary(master)
+```
+
+```{r, echo=FALSE}
+genre_summary <- master %>%
+  group_by(main_genre) %>%
+  summarize(
+    Avg_Popularity = mean(popularity, na.rm = TRUE),
+    Avg_Vote = mean(vote_average, na.rm = TRUE),
+    Total_Revenue = sum(revenue, na.rm = TRUE),
+    Avg_Runtime = mean(Runtime.Mins., na.rm = TRUE)
+  )
+
+# Visualization of preferences across genres
+ggplot(genre_summary, aes(x = reorder(main_genre, -Avg_Popularity),
+                          y = Avg_Popularity, fill = main_genre)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Average Popularity by Genre", x = "Genre", 
+       y = "Average Popularity") +
+  theme_minimal()
+```
+
+
+```{r, echo=FALSE, fig.height=3.7}
+# Calculate success rate by genre
+genre_success <- master %>%
+  group_by(main_genre) %>%
+  summarize(
+    Total_Movies = n(),
+    Successful_Movies = sum(success, na.rm = TRUE),
+    Success_Rate = Successful_Movies / Total_Movies
+  )
+
+# Bar chart: Genre-wise success rate
+ggplot(genre_success, aes(x = reorder(main_genre, Success_Rate), y = Success_Rate, fill = main_genre)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Success Rate by Genre",
+    x = "Genre",
+    y = "Success Rate (%)"
+  ) +
+  theme_minimal() +
+  coord_flip()
+
+```
+
+```{r, echo=FALSE, fig.height=3.7}
+# Data prep
+rating_by_genre <- master %>%
+  group_by(main_genre) %>%
+  summarize(Avg_Rating = mean(vote_average, na.rm = TRUE)) %>%
+  arrange(desc(Avg_Rating))
+
+# Plot
+ggplot(rating_by_genre, aes(x = reorder(main_genre, Avg_Rating), y = Avg_Rating, fill = main_genre)) +
+  geom_bar(stat = "identity", width = 0.7, show.legend = FALSE) +
+  labs(
+    title = "Average Rating by Genre",
+    x = "Genre",
+    y = "Average Rating"
+  ) +
+  coord_flip() +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title = element_text(face = "bold"),
+    axis.text.y = element_text(size = 11)
+  )
+```
+
+
+
+
+```{r, echo=FALSE, fig.height=3.7}
+# Calculate success rate by director (top 10 directors by number of movies)
+director_success <- master %>%
+  group_by(Director) %>%
+  summarize(
+    Total_Movies = n(),
+    Successful_Movies = sum(success, na.rm = TRUE),
+    Success_Rate = Successful_Movies / Total_Movies
+  ) %>%
+  arrange(desc(Total_Movies)) %>%
+  top_n(10, Total_Movies)
+
+# Bar chart: Director-wise success rate
+ggplot(director_success, aes(x = reorder(Director, Success_Rate), y = Success_Rate, fill = Director)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Success Rate by Top 10 Directors",
+    x = "Director",
+    y = "Success Rate (%)"
+  ) +
+  theme_minimal() +
+  coord_flip()
+
+```
+
+```{r, echo=FALSE, fig.height=3.7}
+ggplot(master, aes(x = popularity, y = revenue, color = main_genre)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Revenue vs Popularity by Genre", x = "Popularity", y = "Revenue") +
+  theme_minimal()
+```
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=3.7}
+ggplot(master, aes(x = vote_count, y = popularity)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Popularity vs Vote Count", x = "Vote Count", y = "Popularity") +
+  theme_minimal()
+```
+
+
+```{r, echo=FALSE, fig.height=3.7}
+# Scatterplot: Runtime vs Popularity by Genre
+ggplot(master, aes(x = Runtime.Mins., y = popularity, color = main_genre)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Runtime vs Popularity by Genre", x = "Runtime (Minutes)", y = "Popularity") +
+  theme_minimal()
+```
+
+
+
+```{r, echo=FALSE, fig.height=3.7}
+# Correlation analysis
+key_metrics <- master %>% 
+  select(popularity, vote_average, vote_count, Runtime.Mins., revenue)
+
+cor_matrix <- cor(key_metrics, use = "complete.obs")
+corrplot::corrplot(cor_matrix)
+```
+
+
+```{r, echo=FALSE, fig.height=3.7}
+# Total revenue by genre
+revenue_by_genre <- master %>%
+  group_by(main_genre) %>%
+  summarize(Total_Revenue = sum(revenue, na.rm = TRUE)) %>%
+  arrange(desc(Total_Revenue))
+
+ggplot(revenue_by_genre, aes(x = reorder(main_genre, -Total_Revenue), y = Total_Revenue, fill = main_genre)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Total Revenue by Genre", x = "Genre", y = "Total Revenue") +
+  theme_minimal()
+```
+
+
+```{r, echo=FALSE, fig.height=3.7}
+# Boxplot: Vote Average by Success
+ggplot(master, aes(x = factor(success), y = vote_average, fill = factor(success))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("red", "blue"), labels = c("Not Successful", "Successful")) +
+  labs(
+    title = "Vote Average Distribution by Success",
+    x = "Success (0 = Not Successful, 1 = Successful)",
+    y = "Vote Average"
+  ) +
+  theme_minimal()
+```
+
+
+```{r, echo=FALSE, fig.height=3.7}
+# Boxplot: Runtime by Success
+ggplot(master, aes(x = factor(success), y = Runtime.Mins., fill = factor(success))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("red", "blue"), labels = c("Not Successful", "Successful")) +
+  labs(
+    title = "Runtime Distribution by Success",
+    x = "Success (0 = Not Successful, 1 = Successful)",
+    y = "Runtime (Minutes)"
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r, echo=FALSE, fig.height=3.7}
+# Boxplot: Revenue by Success
+ggplot(master, aes(x = factor(success), y = budget, fill = factor(success))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("red", "blue"), labels = c("Not Successful", "Successful")) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Budget Distribution by Success",
+    x = "Success (0 = Not Successful, 1 = Successful)",
+    y = "Budget"
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r, echo=FALSE}
+# ANOVA to compare average popularity between genres
+anova_model <- aov(popularity ~ main_genre, data = master)
+summary(anova_model)
+```
+
+
+```{r, echo=FALSE}
+# Regression analysis: Popularity vs. Vote Count, Runtime, and Revenue
+model <- lm(popularity ~ vote_count + Runtime.Mins. + revenue, data = master)
+summary(model)
+```
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+logistic_model <- glm(success ~ vote_count + Runtime.Mins. + revenue, 
+                      data = master, family = binomial)
+summary(logistic_model)
+```
+
+
+
+
+
+
+
